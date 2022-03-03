@@ -1,0 +1,465 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.4.1008.15138",
+      "templateHash": "2173847305752288824"
+    }
+  },
+  "parameters": {
+    "appGatewayName": {
+      "type": "string",
+      "metadata": {
+        "description": "The name of the Application Gateawy to be created."
+      }
+    },
+    "appGatewayFQDN": {
+      "type": "string",
+      "defaultValue": "api.example.com",
+      "metadata": {
+        "description": "The FQDN of the Application Gateawy.Must match the TLS Certificate."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "The location of the Application Gateawy to be created"
+      }
+    },
+    "appGatewaySubnetId": {
+      "type": "string",
+      "metadata": {
+        "description": "The subnet resource id to use for Application Gateway."
+      }
+    },
+    "appGatewayCertType": {
+      "type": "string",
+      "metadata": {
+        "description": "Set to selfsigned if self signed certificates should be used for the Application Gateway. Set to custom and copy the pfx file to deployment/bicep/gateway/certs/appgw.pfx if custom certificates are to be used"
+      }
+    },
+    "primaryBackendEndFQDN": {
+      "type": "string",
+      "defaultValue": "api-internal.example.com",
+      "metadata": {
+        "description": "The backend URL of the APIM."
+      }
+    },
+    "probeUrl": {
+      "type": "string",
+      "defaultValue": "/status-0123456789abcdef",
+      "metadata": {
+        "description": "The Url for the Application Gateway Health Probe."
+      }
+    },
+    "keyVaultName": {
+      "type": "string"
+    },
+    "keyVaultResourceGroupName": {
+      "type": "string"
+    },
+    "certPassword": {
+      "type": "secureString"
+    }
+  },
+  "functions": [],
+  "variables": {
+    "appGatewayPrimaryPip": "[format('pip-{0}', parameters('appGatewayName'))]",
+    "appGatewayIdentityId": "[format('identity-{0}', parameters('appGatewayName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2018-11-30",
+      "name": "[variables('appGatewayIdentityId')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2019-09-01",
+      "name": "[variables('appGatewayPrimaryPip')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "publicIPAddressVersion": "IPv4",
+        "publicIPAllocationMethod": "Static"
+      }
+    },
+    {
+      "type": "Microsoft.Network/applicationGateways",
+      "apiVersion": "2019-09-01",
+      "name": "[parameters('appGatewayName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('appGatewayIdentityId')))]": {}
+        }
+      },
+      "properties": {
+        "sku": {
+          "name": "WAF_v2",
+          "tier": "WAF_v2"
+        },
+        "gatewayIPConfigurations": [
+          {
+            "name": "appGatewayIpConfig",
+            "properties": {
+              "subnet": {
+                "id": "[parameters('appGatewaySubnetId')]"
+              }
+            }
+          }
+        ],
+        "sslCertificates": [
+          {
+            "name": "[parameters('appGatewayFQDN')]",
+            "properties": {
+              "keyVaultSecretId": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('keyVaultResourceGroupName')), 'Microsoft.Resources/deployments', 'certificate'), '2020-06-01').outputs.secretUri.value]"
+            }
+          }
+        ],
+        "trustedRootCertificates": [],
+        "frontendIPConfigurations": [
+          {
+            "name": "appGwPublicFrontendIp",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('appGatewayPrimaryPip'))]"
+              }
+            }
+          }
+        ],
+        "frontendPorts": [
+          {
+            "name": "port_80",
+            "properties": {
+              "port": 80
+            }
+          },
+          {
+            "name": "port_443",
+            "properties": {
+              "port": 443
+            }
+          }
+        ],
+        "backendAddressPools": [
+          {
+            "name": "apim",
+            "properties": {
+              "backendAddresses": [
+                {
+                  "fqdn": "[parameters('primaryBackendEndFQDN')]"
+                }
+              ]
+            }
+          }
+        ],
+        "backendHttpSettingsCollection": [
+          {
+            "name": "default",
+            "properties": {
+              "port": 80,
+              "protocol": "Http",
+              "cookieBasedAffinity": "Disabled",
+              "pickHostNameFromBackendAddress": false,
+              "affinityCookieName": "ApplicationGatewayAffinity",
+              "requestTimeout": 20
+            }
+          },
+          {
+            "name": "https",
+            "properties": {
+              "port": 443,
+              "protocol": "Https",
+              "cookieBasedAffinity": "Disabled",
+              "hostName": "[parameters('primaryBackendEndFQDN')]",
+              "pickHostNameFromBackendAddress": false,
+              "requestTimeout": 20,
+              "probe": {
+                "id": "[format('{0}/probes/APIM', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')))]"
+              }
+            }
+          }
+        ],
+        "httpListeners": [
+          {
+            "name": "default",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[format('{0}/frontendIPConfigurations/appGwPublicFrontendIp', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')))]"
+              },
+              "frontendPort": {
+                "id": "[format('{0}/frontendPorts/port_80', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')))]"
+              },
+              "protocol": "Http",
+              "hostnames": [],
+              "requireServerNameIndication": false
+            }
+          },
+          {
+            "name": "https",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[format('{0}/frontendIPConfigurations/appGwPublicFrontendIp', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')))]"
+              },
+              "frontendPort": {
+                "id": "[format('{0}/frontendPorts/port_443', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')))]"
+              },
+              "protocol": "Https",
+              "sslCertificate": {
+                "id": "[format('{0}/sslCertificates/{1}', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')), parameters('appGatewayFQDN'))]"
+              },
+              "hostnames": [],
+              "requireServerNameIndication": false
+            }
+          }
+        ],
+        "urlPathMaps": [],
+        "requestRoutingRules": [
+          {
+            "name": "apim",
+            "properties": {
+              "ruleType": "Basic",
+              "httpListener": {
+                "id": "[format('{0}/httpListeners/https', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')))]"
+              },
+              "backendAddressPool": {
+                "id": "[format('{0}/backendAddressPools/apim', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')))]"
+              },
+              "backendHttpSettings": {
+                "id": "[format('{0}/backendHttpSettingsCollection/https', resourceId('Microsoft.Network/applicationGateways', parameters('appGatewayName')))]"
+              }
+            }
+          }
+        ],
+        "probes": [
+          {
+            "name": "APIM",
+            "properties": {
+              "protocol": "Https",
+              "host": "[parameters('primaryBackendEndFQDN')]",
+              "path": "[parameters('probeUrl')]",
+              "interval": 30,
+              "timeout": 30,
+              "unhealthyThreshold": 3,
+              "pickHostNameFromBackendHttpSettings": false,
+              "minServers": 0,
+              "match": {
+                "statusCodes": [
+                  "200-399"
+                ]
+              }
+            }
+          }
+        ],
+        "rewriteRuleSets": [],
+        "redirectConfigurations": [],
+        "webApplicationFirewallConfiguration": {
+          "enabled": true,
+          "firewallMode": "Detection",
+          "ruleSetType": "OWASP",
+          "ruleSetVersion": "3.0",
+          "disabledRuleGroups": [],
+          "requestBodyCheck": true,
+          "maxRequestBodySizeInKb": 128,
+          "fileUploadLimitInMb": 100
+        },
+        "enableHttp2": true,
+        "autoscaleConfiguration": {
+          "minCapacity": 2,
+          "maxCapacity": 3
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('appGatewayIdentityId'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('appGatewayPrimaryPip'))]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('keyVaultResourceGroupName')), 'Microsoft.Resources/deployments', 'certificate')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2020-06-01",
+      "name": "certificate",
+      "resourceGroup": "[parameters('keyVaultResourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "managedIdentity": {
+            "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('appGatewayIdentityId')), '2018-11-30', 'full')]"
+          },
+          "keyVaultName": {
+            "value": "[parameters('keyVaultName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "appGatewayFQDN": {
+            "value": "[parameters('appGatewayFQDN')]"
+          },
+          "appGatewayCertType": {
+            "value": "[parameters('appGatewayCertType')]"
+          },
+          "certPassword": {
+            "value": "[parameters('certPassword')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.4.1008.15138",
+              "templateHash": "4158082375898142479"
+            }
+          },
+          "parameters": {
+            "keyVaultName": {
+              "type": "string"
+            },
+            "managedIdentity": {
+              "type": "object"
+            },
+            "location": {
+              "type": "string"
+            },
+            "appGatewayFQDN": {
+              "type": "string"
+            },
+            "certPassword": {
+              "type": "secureString"
+            },
+            "appGatewayCertType": {
+              "type": "string"
+            }
+          },
+          "functions": [],
+          "variables": {
+            "secretName": "[replace(parameters('appGatewayFQDN'), '.', '-')]",
+            "subjectName": "[format('CN={0}', parameters('appGatewayFQDN'))]",
+            "certData": "MIIKmQIBAzCCClUGCSqGSIb3DQEHAaCCCkYEggpCMIIKPjCCBg8GCSqGSIb3DQEHAaCCBgAEggX8MIIF+DCCBfQGCyqGSIb3DQEMCgECoIIE/jCCBPowHAYKKoZIhvcNAQwBAzAOBAgc9KueFjhVMQICB9AEggTYgWAe6F+woJjKkRw6eWsDBAQKcEQbSJgQC8zipmWyVKQvgR5XE1JYoBvZj+KBR+jS9GlPIUZ0xptCPGHIIxHhljtyXV2VYi252Zl/Pz5W9Oglu+tau27/hKlcGKwoIWP+FBuBp5NgCj3s65YxeJ54IUhynzJcmLgX7Z9EfJkpZ7j4LtWhAtZ4y0xCmR2lCXPePAJVigfHFIiWw8OKT45OhPphl+whH3RSXADWSUVF06bnHdPLms+U4P1mfM64jbqJep6mzTWzooryEecvnW1skhZIqqU5eYKzlWqAHzznbHQ57kFwDCNa38YrCVniGp6ipxLEKRGzNf7B25QzWGI7lGBydautIGJA1g5Jt12iDgXT6TC/FQOM5H04zHF6DDT9UYgQ84FXBj05lvppM9iIxt4TaJPkJYXF3ozju6V5ohBCaBcZYyRuBN1mwkgccwHBToyS1ZFfgeFdCvFL8e1PPjBOI/AFNTuPvdpwMyJGWq15V33lFU7S7eCLg7Fw2FqL6fRwG3mvd3BfbRrF+S7gFZSZVA6Q7SHIyyK4QWNk8qIAN3qz3EY8Te3LmPYDc0aFfxPbE/bjm2joLTUMrByv98niY6+KIsU7Akvcgv5eLnQSCkNakfWOaXpyCHcSU4oqEuOtjH0cC7gcJyONuMcjRbesNK+h74z69H+hF0OBgvcXfK6LvwxEAAoTl5WELx4p2pCP0wcp7aDqj/hCQyj3JAg9oPMQ+Z3nCZYQk/p1XkAgvYWn/VYRFGQ+1r9iW1RgP4owl0sHDM6i4RM5qWOO/sO8Rub5C5jqKmblYIvauAWzyFENoOtHbeCBnJTGXXnk7D5Xujn3I4RoS2kbM/zZIfJ0yKezP65tXfv0p/032jPvk2SkpJfmw4jFck1BTe6ccWb0OIDHiu1DU1ShugPL2Ku9/A/vh3mqwOFRKUxE/Z576Nc+orSoma6FQQGwo3IxWVAKN4ZQxUxtgKgCIt6nKNL+AHDfLptCdDSftXFeAN8vwk2Oe8HQw6HunUWC/imRKDxshEJxWrfwyq4JWkglgKSR3S+aOqMTM+AxfRFEjopPB9Nta9SGKeajekctqC2dwToqUbenV5UJ7rUlLzdxL3TzFftn3EUQs/t22urGkSiFnVKpFgP08VT4PrIwavU/8BFsX4aDopvBIjvC01/6N36YqPF4+m4YJQZ+Yz2Wu6AYytSW3i5uplWBi7NiZMOlyvi5N3JHg0ljlFbivIen+t5PH7ombSqq/GO0aXORVUDclYVB95pAJmNXjHtbAme5pfxLRdDLmbcMwbbx04I/+0XGIMMEjGveuuF+MkFG57fTP5mKsRS2lrXbgFZ1ejSlb7/gRiNzahjKGn4ou/Qrq7QwYARjcCBomg5vecEgDuG/RzKGOT7FCuRebpfyydGl19X206x/0rlpL+jH7B/Eka9rArHdPpHuptDoOKYOGk8x1B2g5pbR37CMSvrNRX5zGFG7ph2lAQWw8/w4CRpceAydlgRFPPkjRaMihP1gTY5hDP1AjTVY6GeOnlrPAnyUCzNvWyadrTO/B9FysiBrIVV1fh+8ffAlpSQbLPzVVR/CsYlZDblfbrFZ2Wt+GbXnxbYr5/e9u05bP/BjttNwPe/ucQgZ2JtKq/TVQUTi/Myu6FoL3zj1rDGB4jANBgkrBgEEAYI3EQIxADATBgkqhkiG9w0BCRUxBgQEAQAAADBdBgkqhkiG9w0BCRQxUB5OAHQAZQAtADUAZQBkADQAMQA1ADQAOAAtADMANQBkADAALQA0ADcAZQBjAC0AOQAxAGEAZgAtADEAMgA0ADEAYwA0AGEAZQBlADcAMwAyMF0GCSsGAQQBgjcRATFQHk4ATQBpAGMAcgBvAHMAbwBmAHQAIABTAG8AZgB0AHcAYQByAGUAIABLAGUAeQAgAFMAdABvAHIAYQBnAGUAIABQAHIAbwB2AGkAZABlAHIwggQnBgkqhkiG9w0BBwagggQYMIIEFAIBADCCBA0GCSqGSIb3DQEHATAcBgoqhkiG9w0BDAEDMA4ECDWhyKDhttAyAgIH0ICCA+Dx8AQMhBNDs/mjAKRqBcltyv7Ap00LnFkAamw1Sa0v0ndyqD/2HlcYlRzZevPF4nhempMqqKv337CDHVC6EN4QUhVuQMCp6VOCm6z2jmEMclGCDwLnuYZbD+kxMD+07efv55aoAx5vJUFf4PSEtMIulcg6hulVLl8a8MUZJU+D3uLZNZdxJmBeChx1Hy0yapY5yro82amqUJP2PmNuQoimDtymX30lvJppt+z6ngSzqYRmeopfj9j9wCyGEzeKwFRG+/1yHAqmnm3/2TqKE6xJzKH3VW0rUYHYKiRaP9WF0ZvCpM8zeuyYO2gMZnFqUm5YL30MV4qxzjbzCqMZgXwuCcaHluyVTGZpo+wNw5XlqPP99JrxqlLziAHAg/YdZCsPR3v1f3dU8zaeQ/Kc0W5t7mcBu3TPeKDlvtzaCPwdGj2dVDFOHPGRaSw6zS7ImvyVxyQ+MM4HW1wkQ77T4auuyNWMnJ9QGZfd6pV40k4qefXZCqzL0LK4SFCxQDAiWrtM3Pb7A5+vYY+aI9Ruf5SLRitN6PAR8qHCJqXHAmlMC3s+zP+GUGbMnoa7lnpkJZJf5Fu9n59BKkG8NwMPCg9Q8znKiidRqdm4NthgDOU9fNiL/wuD0hWiN59Ms3ZeuAKvVd7ZYOqTSBkd/zkJ/LGrB6jWwL1yYjoPfyurB/U/VwG/kzArTDuRC4mbu/80VxFdrcivlUCPcDv327cx2wIO9GBlZ1H/PG5lICyf12+SZpJ8yfLXtPe03Aov9bkw0Z+rdL2l1W/J3cKaxR0W9SmuVQTy0P5VsbIYvkWREe0Pjojrsk3jYlcdHy8STurgFib597F6GIoQ9pos/DasYEPHYMpi5s11fbsk93Gpq1VuWnuqNFXpXzxSelKTlgjfezyZ37VdGokjcK1YTQQa0rxEZHyJZMkZKgNlW7ybBXi/qQI6x1rDoqZVeGR/OBE7CPlBYLdCZU7603s8Zf1QkXiLmkptho8Hce2byTf0uckTMZU52QyTnLnnagdALpKsL1AhJQKN23uwdLE9fCRXmDbHGaR3CrUsdD3wxmqnxfm7VdLRz6FiFRP4kfF8bEIwvUa0HXWxuvVZJsa3jqke2FM+zwDZbcMAa3wWYz0zMtyX2Z6B+hu05AA1DLdzXXi1mVPLIWpxJvqOEigw2LVX9dowTRe6vVG8Vo6Nhm4bmjFcfMaHh9LjAcxP8hbSe2nxuEg8vjTBU20ic0g2xt1Jf6W+dsJTYkcSdNvpschoLzrAV8y2QGIKXQJqSAwePlBeGo9RMGWieB5WNIL5sVRzll67dsvmYiGZy+3Rtwr0Q8q/dzA7MB8wBwYFKw4DAhoEFB5Jh1ZXYMNy6Nap6Ac5NKHYnzX1BBSWOqhObwQntkUD9eFO435oT9v+HwICB9A="
+          },
+          "resources": [
+            {
+              "type": "Microsoft.KeyVault/vaults/accessPolicies",
+              "apiVersion": "2019-09-01",
+              "name": "[format('{0}/add', parameters('keyVaultName'))]",
+              "properties": {
+                "accessPolicies": [
+                  {
+                    "objectId": "[parameters('managedIdentity').properties.principalId]",
+                    "tenantId": "[parameters('managedIdentity').properties.tenantId]",
+                    "permissions": {
+                      "secrets": [
+                        "get",
+                        "list"
+                      ],
+                      "certificates": [
+                        "import",
+                        "get",
+                        "list",
+                        "update",
+                        "create"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Resources/deploymentScripts",
+              "apiVersion": "2020-10-01",
+              "name": "[format('{0}-certificate', variables('secretName'))]",
+              "location": "[parameters('location')]",
+              "kind": "AzurePowerShell",
+              "properties": {
+                "azPowerShellVersion": "6.6",
+                "arguments": "[format(' -vaultName {0} -certificateName {1} -subjectName {2} -certPwd {3} -certDataString {4} -certType {5}', parameters('keyVaultName'), variables('secretName'), variables('subjectName'), parameters('certPassword'), variables('certData'), parameters('appGatewayCertType'))]",
+                "scriptContent": "      param(\r\n      [string] [Parameter(Mandatory=$true)] $vaultName,\r\n      [string] [Parameter(Mandatory=$true)] $certificateName,\r\n      [string] [Parameter(Mandatory=$true)] $subjectName,\r\n      [string] [Parameter(Mandatory=$true)] $certPwd,\r\n      [string] [Parameter(Mandatory=$true)] $certDataString,\r\n      [string] [Parameter(Mandatory=$true)] $certType\r\n      )\r\n\r\n      $ErrorActionPreference = 'Stop'\r\n      $DeploymentScriptOutputs = @{}\r\n      if ($certType -eq 'selfsigned') {\r\n        $policy = New-AzKeyVaultCertificatePolicy -SubjectName $subjectName -IssuerName Self -ValidityInMonths 12 -Verbose\r\n        \r\n        # private key is added as a secret that can be retrieved in the ARM template\r\n        Add-AzKeyVaultCertificate -VaultName $vaultName -Name $certificateName -CertificatePolicy $policy -Verbose\r\n        \r\n        $newCert = Get-AzKeyVaultCertificate -VaultName $vaultName -Name $certificateName\r\n\r\n        # it takes a few seconds for KeyVault to finish\r\n        $tries = 0\r\n        do {\r\n          Write-Host 'Waiting for certificate creation completion...'\r\n          Start-Sleep -Seconds 10\r\n          $operation = Get-AzKeyVaultCertificateOperation -VaultName $vaultName -Name $certificateName\r\n          $tries++\r\n\r\n          if ($operation.Status -eq 'failed')\r\n          {\r\n          throw 'Creating certificate $certificateName in vault $vaultName failed with error $($operation.ErrorMessage)'\r\n          }\r\n\r\n          if ($tries -gt 120)\r\n          {\r\n          throw 'Timed out waiting for creation of certificate $certificateName in vault $vaultName'\r\n          }\r\n        } while ($operation.Status -ne 'completed')\t\t\r\n      }\r\n      else {\r\n        $ss = Convertto-SecureString -String $certPwd -AsPlainText -Force; \r\n        Import-AzKeyVaultCertificate -Name $certificateName -VaultName $vaultName -CertificateString $certDataString -Password $ss\r\n      }\r\n      ",
+                "retentionInterval": "P1D"
+              },
+              "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('/subscriptions/{0}/resourceGroups/{1}/providers/{2}', parameters('managedIdentity').subscriptionId, parameters('managedIdentity').resourceGroupName, parameters('managedIdentity').resourceId)]": {}
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults/accessPolicies', split(format('{0}/add', parameters('keyVaultName')), '/')[0], split(format('{0}/add', parameters('keyVaultName')), '/')[1])]"
+              ]
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2020-06-01",
+              "name": "[format('{0}-certificate', variables('secretName'))]",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "keyVaultName": {
+                    "value": "[parameters('keyVaultName')]"
+                  },
+                  "secretName": {
+                    "value": "[variables('secretName')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.4.1008.15138",
+                      "templateHash": "8443453153236424641"
+                    }
+                  },
+                  "parameters": {
+                    "keyVaultName": {
+                      "type": "string"
+                    },
+                    "secretName": {
+                      "type": "string"
+                    }
+                  },
+                  "functions": [],
+                  "resources": [],
+                  "outputs": {
+                    "secretUri": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.KeyVault/vaults/secrets', split(format('{0}/{1}', parameters('keyVaultName'), parameters('secretName')), '/')[0], split(format('{0}/{1}', parameters('keyVaultName'), parameters('secretName')), '/')[1]), '2021-06-01-preview').secretUriWithVersion]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Resources/deploymentScripts', format('{0}-certificate', variables('secretName')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "secretUri": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Resources/deployments', format('{0}-certificate', variables('secretName'))), '2020-06-01').outputs.secretUri.value]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('appGatewayIdentityId'))]"
+      ]
+    }
+  ]
+}
